@@ -3,13 +3,20 @@ import SwiftUI
 @main
 struct PureApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
-    
+
     var body: some Scene {
-        // Seule l'icône barre des menus est déclarée ici
         MenuBarExtra("Pure", systemImage: "chart.pie.fill") {
             MenuBarView(viewModel: appDelegate.viewModel)
         }
         .menuBarExtraStyle(.window)
+        .commands {
+            CommandGroup(replacing: .appTermination) {
+                Button("Quitter PURE") {
+                    NSApp.terminate(nil)
+                }
+                .keyboardShortcut("q", modifiers: [.command])
+            }
+        }
     }
 }
 

@@ -389,7 +389,7 @@ struct MenuBarView: View {
                 Divider().opacity(0.1)
 
                 HStack {
-                    Button("Quitter") { NSApplication.shared.terminate(nil) }.font(.system(size: 10)).opacity(0.5).buttonStyle(.plain)
+                    Button("Quitter (⌘+Q)") { NSApplication.shared.terminate(nil) }.font(.system(size: 10)).opacity(0.5).buttonStyle(.plain)
                     Spacer()
                     Text("PURE v1.0").font(.system(size: 8, weight: .bold)).opacity(0.3)
                 }
