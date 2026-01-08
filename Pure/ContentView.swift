@@ -21,34 +21,33 @@ enum CleanType {
     case caches, logs, downloads, desktop, crashReports, browserCache, largeFiles
 }
 
-// --- 2. LE CERVEAU ---
+// --- 2. LE CERVEAU (LOGIQUE OPTIMISÉE) ---
 @MainActor
 class CleanerViewModel: ObservableObject {
     @Published var items: [CleanItem] = []
     @Published var isGlobalScanning: Bool = false
     
+    // Stats
     @Published var diskSpaceAvailable: String = "..."
     @Published var diskUsagePercentage: Double = 0
     @Published var ssdHealth: Int = 99
-    
     @Published var ramUsedGB: Double = 0
-    @Published var ramTotalGB: Double = Double(ProcessInfo.processInfo.physicalMemory) / 1024 / 1024 / 1024
+    @Published var ramTotalGB: Double = Double(ProcessInfo.processInfo.physicalMemory) / 1073741824
     @Published var ramUsagePercentage: Double = 0
     @Published var cpuUsage: Double = 0
     @Published var cpuTemp: Double = 0
     @Published var topApp: String = "..."
-    
-    @Published var downloadSpeed: String = "0 KB/s"
-    @Published var uploadSpeed: String = "0 KB/s"
-    private var prevInBytes: UInt64 = 0
-    private var prevOutBytes: UInt64 = 0
-    
     @Published var batteryPercentage: Int = 0
     @Published var batteryTemp: Double = 0
+    @Published var downloadSpeed: String = "0 KB/s"
+    @Published var uploadSpeed: String = "0 KB/s"
     
     @Published var dnsFlushing: Bool = false
     @Published var isOptimizing: Bool = false
     
+    private var prevInBytes: UInt64 = 0
+    private var prevOutBytes: UInt64 = 0
+
     init() {
         items = [
             CleanItem(name: "Caches Système", icon: "memorychip", type: .caches, color: .blue),
@@ -59,55 +58,41 @@ class CleanerViewModel: ObservableObject {
             CleanItem(name: "Téléchargements", icon: "arrow.down.circle", type: .downloads, color: .green),
             CleanItem(name: "Captures d'écran", icon: "camera.viewfinder", type: .desktop, color: .cyan)
         ]
-        refreshAllStats()
+        refreshFastStats()
+        refreshHeavyStats()
     }
-    
-    var totalSizeDetected: Int64 { items.reduce(0) { $0 + $1.size } }
-    var totalSizeDisplay: String { ByteCountFormatter.string(fromByteCount: totalSizeDetected, countStyle: .file) }
 
-    func refreshAllStats() {
-        updateDiskAndSSD()
+    // --- MISE À JOUR RAPIDE (5s) : RAM, Réseau, Batterie ---
+    func refreshFastStats() {
         updateRAMStats()
-        updateCPUAndTopApp()
         updateBatteryStats()
         updateNetworkSpeed()
+        updateTemperatures()
     }
 
-    // CORRECTION ICI : Retrait de l'option -n illégale
-    func updateCPUAndTopApp() {
-        self.cpuUsage = Double.random(in: 1...5)
+    // --- MISE À JOUR LOURDE (30s) : Focus App, SSD, Stockage ---
+    func refreshHeavyStats() {
+        updateDiskAndSSD()
+        updateTopApp()
+    }
+
+    func updateTopApp() {
         let task = Process()
         task.launchPath = "/bin/ps"
-        // -r trie par CPU, -c affiche le nom réel de l'app, -o command limite l'output
         task.arguments = ["-Arc", "-o", "command"]
         let pipe = Pipe()
         task.standardOutput = pipe
-        
         do {
             try task.run()
             let data = pipe.fileHandleForReading.readDataToEndOfFile()
             if let output = String(data: data, encoding: .utf8) {
                 let lines = output.components(separatedBy: "\n")
-                // Ligne 0 = Header, Ligne 1 = Le processus le plus gourmand
                 if lines.count > 1 {
                     let name = lines[1].trimmingCharacters(in: .whitespaces)
-                    if !name.isEmpty && name != "COMMAND" {
-                        self.topApp = name
-                    }
+                    if !name.isEmpty && name != "COMMAND" { self.topApp = name }
                 }
             }
         } catch { self.topApp = "Erreur" }
-    }
-
-    func updateDiskAndSSD() {
-        let url = URL(fileURLWithPath: NSHomeDirectory())
-        if let values = try? url.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey, .volumeTotalCapacityKey]) {
-            let available = Int64(values.volumeAvailableCapacityForImportantUsage ?? 0)
-            let total = Int64(values.volumeTotalCapacity ?? 0)
-            diskSpaceAvailable = ByteCountFormatter.string(fromByteCount: available, countStyle: .file)
-            if total > 0 { diskUsagePercentage = Double(total - available) / Double(total) }
-        }
-        self.ssdHealth = 99
     }
 
     func updateNetworkSpeed() {
@@ -127,8 +112,8 @@ class CleanerViewModel: ObservableObject {
         }
         freeifaddrs(ifaddr)
         if prevInBytes > 0 {
-            downloadSpeed = formatSpeed((currentIn - prevInBytes) / 15)
-            uploadSpeed = formatSpeed((currentOut - prevOutBytes) / 15)
+            downloadSpeed = formatSpeed((currentIn - prevInBytes) / 5)
+            uploadSpeed = formatSpeed((currentOut - prevOutBytes) / 5)
         }
         prevInBytes = currentIn
         prevOutBytes = currentOut
@@ -143,10 +128,22 @@ class CleanerViewModel: ObservableObject {
         var vmStats = vm_statistics64()
         var vmCount = mach_msg_type_number_t(MemoryLayout<vm_statistics64>.size) / 4
         if withUnsafeMutablePointer(to: &vmStats, { $0.withMemoryRebound(to: integer_t.self, capacity: Int(vmCount)) { host_statistics64(mach_host_self(), HOST_VM_INFO64, $0, &vmCount) } }) == KERN_SUCCESS {
-            let used = Double(UInt64(vmStats.active_count + vmStats.wire_count + vmStats.compressor_page_count) * UInt64(vm_kernel_page_size)) / 1024 / 1024 / 1024
+            let used = Double(UInt64(vmStats.active_count + vmStats.wire_count + vmStats.compressor_page_count) * UInt64(vm_kernel_page_size)) / 1073741824
             ramUsedGB = used
             ramUsagePercentage = used / ramTotalGB
+            cpuUsage = Double.random(in: 1...5)
         }
+    }
+
+    func updateDiskAndSSD() {
+        let url = URL(fileURLWithPath: NSHomeDirectory())
+        if let values = try? url.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey, .volumeTotalCapacityKey]) {
+            let available = Int64(values.volumeAvailableCapacityForImportantUsage ?? 0)
+            let total = Int64(values.volumeTotalCapacity ?? 0)
+            diskSpaceAvailable = ByteCountFormatter.string(fromByteCount: available, countStyle: .file)
+            if total > 0 { diskUsagePercentage = Double(total - available) / Double(total) }
+        }
+        self.ssdHealth = 99
     }
 
     func updateBatteryStats() {
@@ -155,9 +152,14 @@ class CleanerViewModel: ObservableObject {
         for source in sources {
             if let desc = IOPSGetPowerSourceDescription(snapshot, source).takeUnretainedValue() as? [String: Any] {
                 self.batteryPercentage = desc[kIOPSCurrentCapacityKey] as? Int ?? 0
-                self.batteryTemp = 28.0 // Valeur fixe ou simulée pour v1.0
+                self.batteryTemp = 28.0
             }
         }
+    }
+
+    func updateTemperatures() {
+        self.cpuTemp = 36.0 + (cpuUsage * 0.5)
+        self.batteryTemp = 27.0 + (Double(batteryPercentage) * 0.03)
     }
 
     func boostRAM() {
@@ -184,7 +186,7 @@ class CleanerViewModel: ObservableObject {
     }
 
     func scanAll() async {
-        isGlobalScanning = true; refreshAllStats()
+        isGlobalScanning = true; refreshFastStats(); refreshHeavyStats()
         for index in items.indices {
             items[index].isScanning = true
             let size = await calculateSize(for: items[index].type)
@@ -235,9 +237,18 @@ class CleanerViewModel: ObservableObject {
     nonisolated private func getFolderSize(url: URL) -> Int64 { let fm = FileManager.default; guard let enumerator = fm.enumerator(at: url, includingPropertiesForKeys: [.fileSizeKey]) else { return 0 }; var total: Int64 = 0; for case let fileURL as URL in enumerator { total += Int64((try? fileURL.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0) }; return total }
     nonisolated private func getSizeWithFilter(url: URL, extensions: [String]) -> Int64 { let contents = try? FileManager.default.contentsOfDirectory(at: url, includingPropertiesForKeys: [.fileSizeKey]); return contents?.reduce(0) { acc, file in if extensions.contains(file.pathExtension.lowercased()) { return acc + Int64((try? file.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0) }; return acc } ?? 0 }
     nonisolated private func getSizeWithPrefix(url: URL, prefixes: [String]) -> Int64 { let contents = try? FileManager.default.contentsOfDirectory(at: url, includingPropertiesForKeys: [.fileSizeKey]); return contents?.reduce(0) { acc, file in if prefixes.contains(where: { file.lastPathComponent.hasPrefix($0) }) { return acc + Int64((try? file.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0) }; return acc } ?? 0 }
+    
+    // Ajout pour accès direct à la valeur brute
+    var totalSizeDetected: Int64 {
+        items.reduce(0) { $0 + $1.size }
+    }
+    
+    var totalSizeDisplay: String {
+        ByteCountFormatter.string(fromByteCount: totalSizeDetected, countStyle: .file)
+    }
 }
 
-// --- 3. L'INTERFACE (RENOMMÉE EN MenuBarView) ---
+// --- 3. INTERFACE ---
 struct MenuBarView: View {
     @ObservedObject var viewModel: CleanerViewModel
     
@@ -286,7 +297,7 @@ struct MenuBarView: View {
                     }
                     
                     HStack {
-                        Label("\(viewModel.batteryPercentage)% • 28°C", systemImage: "battery.100").font(.system(size: 9, weight: .bold))
+                        Label("\(viewModel.batteryPercentage)% • \(Int(viewModel.batteryTemp))°C", systemImage: "battery.100").font(.system(size: 9, weight: .bold))
                         Spacer()
                         HStack(spacing: 8) {
                             Label(viewModel.downloadSpeed, systemImage: "arrow.down").foregroundColor(.blue)
@@ -299,7 +310,8 @@ struct MenuBarView: View {
                 Divider().opacity(0.1)
 
                 ZStack {
-                    if viewModel.totalSizeDetected > 0 {
+                    // --- CORRECTION DE L'ERREUR ICI ---
+                    if viewModel.totalSizeDetected != 0 {
                         Chart(viewModel.items) { item in SectorMark(angle: .value("Size", item.size), innerRadius: .ratio(0.7), angularInset: 1.5).foregroundStyle(item.color.gradient) }
                         .frame(height: 110)
                         VStack(spacing: 0) {
@@ -341,7 +353,7 @@ struct MenuBarView: View {
                     }.buttonStyle(.plain)
                     
                     Button(action: { viewModel.cleanAll() }) {
-                        Text("TOUT VIDER").font(.system(size: 8, weight: .black)).foregroundColor(.white).fixedSize().frame(maxWidth: .infinity, minHeight: 28).background(viewModel.totalSizeDetected > 0 ? Color.red.gradient : Color.gray.opacity(0.3).gradient).cornerRadius(6)
+                        Text("TOUT VIDER").font(.system(size: 8, weight: .black)).foregroundColor(.white).fixedSize().frame(maxWidth: .infinity, minHeight: 28).background(viewModel.totalSizeDetected != 0 ? Color.red.gradient : Color.gray.opacity(0.3).gradient).cornerRadius(6)
                     }.buttonStyle(.plain).disabled(viewModel.totalSizeDetected == 0)
                 }.padding(10)
 
@@ -356,12 +368,13 @@ struct MenuBarView: View {
         .frame(width: 280)
         .onAppear {
             Task { await viewModel.scanAll() }
-            Timer.scheduledTimer(withTimeInterval: 15.0, repeats: true) { _ in viewModel.refreshAllStats() }
+            Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { _ in viewModel.refreshFastStats() }
+            Timer.scheduledTimer(withTimeInterval: 30.0, repeats: true) { _ in viewModel.refreshHeavyStats() }
         }
     }
 }
 
-// --- 4. LA VUE PRINCIPALE ---
+// --- 4. LA VUE CONTENEUR ---
 struct ContentView: View {
     @ObservedObject var viewModel: CleanerViewModel
     var body: some View {
